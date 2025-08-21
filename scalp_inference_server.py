@@ -16,7 +16,8 @@ model_paths = {
     "모낭사이홍반": "model3_full.pt",
     "모낭홍반농포": "model4_full.pt",
     "비듬": "model5_full.pt",
-    "피지과다": "model6_full.pt"
+    "피지과다": "model6_full.pt",
+    "모발밀도": "model7_full.pt"
 }
 
 models = {}
