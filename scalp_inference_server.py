@@ -3,6 +3,7 @@ import torch
 from efficientnet_pytorch import EfficientNet
 from torchvision import transforms
 from PIL import Image
+import numpy as np
 
 # PyTorch 2.6+ 대응: 신뢰할 수 있는 클래스 등록
 torch.serialization.add_safe_globals({'EfficientNet': EfficientNet})
@@ -16,13 +17,15 @@ model_paths = {
     "모낭사이홍반": "model3_full.pt",
     "모낭홍반농포": "model4_full.pt",
     "비듬": "model5_full.pt",
-    "피지과다": "model6_full.pt"
+    "피지과다": "model6_full.pt",
+    "모발밀도": "model7_full.pt"
 }
 
 models = {}
 for name, path in model_paths.items():
-    models[name] = torch.load(path, map_location=torch.device('cpu'), weights_only=False)
-    models[name].eval()
+    m = torch.load(path, map_location=torch.device('cpu'), weights_only=False)
+    m.eval()
+    models[name] = m
 
 # Preprocessing
 transform = transforms.Compose([
@@ -34,27 +37,60 @@ transform = transforms.Compose([
 
 @app.route("/ai", methods=["POST"])
 def ai():
-    if 'image' not in request.files:
+    # 다중 파일 입력: image 필드로 여러 개 업로드
+    files = request.files.getlist('image')
+    if not files:
         return jsonify({'error': 'No image provided'}), 400
 
-    image = Image.open(request.files['image']).convert('RGB')
-    image_tensor = transform(image).unsqueeze(0)
+    # 질환별 확률 누적
+    sum_probs = {disease: None for disease in models.keys()}
+    valid_count = 0
 
+    with torch.inference_mode():
+        for f in files:
+            try:
+                image = Image.open(f.stream).convert('RGB')
+            except Exception:
+                # 잘못된 이미지는 평균에서 제외
+                continue
+
+            x = transform(image).unsqueeze(0)     # [1, 3, H, W]
+
+            for disease, model in models.items():
+                logits = model(x)                  # [1, C]
+                prob = torch.softmax(logits[0], dim=0).cpu().numpy()  # [C]
+
+                if sum_probs[disease] is None:
+                    sum_probs[disease] = prob.copy()
+                else:
+                    sum_probs[disease] += prob
+
+            valid_count += 1
+
+    if valid_count == 0:
+        return jsonify({'error': 'All images were invalid'}), 400
+
+    # 평균 확률 → 최종 결과
     results = {}
-    for disease, model in models.items():
-        with torch.no_grad():
-            output = model(image_tensor)
-            prob = torch.nn.functional.softmax(output[0], dim=0)
-            pred_class = torch.argmax(prob).item()
-            results[disease] = {
-                "class_index": pred_class,
-                "confidence": round(prob[pred_class].item(), 3)
-            }
+    for disease, s in sum_probs.items():
+        mean_prob = s / float(valid_count)         # [C]
+        pred = int(np.argmax(mean_prob))
+        conf = float(mean_prob[pred])
+        results[disease] = {
+            "class_index": pred,
+            "confidence": round(conf, 3)
+        }
 
-    return jsonify(results)
+    return jsonify({
+        "count": valid_count,   # 평균에 사용된 유효 이미지 수
+        "results": results
+    })
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+    #app.run(host="0.0.0.0", port=8000)
+
+
 
 
 
